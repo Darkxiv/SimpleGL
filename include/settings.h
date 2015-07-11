@@ -4,6 +4,6 @@
 #define DRAW_MODEL 1
 #define DRAW_TEST 2
 
-#define DRAW DRAW_TEST
+#define DRAW DRAW_MODEL
 
 #endif

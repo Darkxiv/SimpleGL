@@ -10,8 +10,8 @@ const TGAColor red = TGAColor(255, 0, 0, 255);
 const TGAColor green = TGAColor(0, 255, 0, 255);
 const TGAColor blue = TGAColor(0, 0, 255, 255);
 
-const int width = 200;
-const int height = 200;
+const int width = 600;
+const int height = 600;
 
 int main(int argc, char** argv) 
 {
