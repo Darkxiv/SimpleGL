@@ -6,7 +6,7 @@
 #include "model.h"
 
 // need to check value during processing
-Model::Model(const char *fn) : vertices(), geometry(2, std::vector<std::vector<int>>())
+Model::Model(const char *fn) : vertices(), geometry(LAYERS_COUNT, std::vector<std::vector<int>>())
 {
 	std::ifstream in;
 	in.open(fn, std::ifstream::in);
@@ -29,17 +29,20 @@ Model::Model(const char *fn) : vertices(), geometry(2, std::vector<std::vector<i
 			vertices.push_back(v);
 		}
 		else if (!line.compare(0, 2, "f ")) {
-			std::vector<int> f, t;
-			int tmpv, idx, idt;
+			std::vector<int> v, t, n;
+			int idn, idv, idt;
 			iss >> tmp;
-			while (iss >> idx >> tmp >> idt >> tmp >> tmpv) {
-				idx--; // in wavefront obj all indices start at 1, not zero
+			while (iss >> idv >> tmp >> idt >> tmp >> idn) {
+				idv--; // in wavefront obj all indices start at 1, not zero
+				v.push_back(idv);
 				idt--;
-				f.push_back(idx);
 				t.push_back(idt);
+				idn--;
+				n.push_back(idn);
 			}
-			geometry[VERTEX_LAYER].push_back(f);
-			geometry[TEXCO_LAYER].push_back(t);
+			geometry[CO_LAYER].push_back(v);
+			geometry[UV_LAYER].push_back(t);
+			geometry[NOR_LAYER].push_back(n);
 		}
 		else if (!line.compare(0, 4, "vt  ")) {
 			iss >> tmp >> tmp;
@@ -48,6 +51,14 @@ Model::Model(const char *fn) : vertices(), geometry(2, std::vector<std::vector<i
 				iss >> v[i];
 
 			uv.push_back(v);
+		}
+		else if (!line.compare(0, 4, "vn  ")) {
+			iss >> tmp >> tmp;
+			glm::vec3 v;
+			for (int i = 0; i < 3; i++)
+				iss >> v[i];
+
+			normals.push_back(v);
 		}
 	}
 	std::cout << "# v# " << vertices.size() << " f# " << geometry.size() << std::endl;
@@ -62,19 +73,44 @@ int Model::nverts() const
 
 int Model::nfaces() const
 {
-	return (int)geometry[VERTEX_LAYER].size();
+	return (int)geometry[CO_LAYER].size();
 }
 
-std::vector<std::vector<glm::vec3>> Model::get_face(int idx) const
+int Model::nnormals() const
 {
-	std::vector<int> idv = geometry[VERTEX_LAYER][idx];
-	std::vector<int> idt = geometry[TEXCO_LAYER][idx];
-	std::vector<glm::vec3> vert, texco;
+	return (int)geometry[NOR_LAYER].size();
+}
+
+int Model::nuv() const
+{
+	return (int)geometry[UV_LAYER].size();
+}
+
+Face Model::get_face(int idx) const
+{
+	std::vector<int> idv = geometry[CO_LAYER][idx];
+	std::vector<int> idt = geometry[UV_LAYER][idx];
+	std::vector<int> idn = geometry[NOR_LAYER][idx];
+	std::vector<glm::vec3> vert, texco, nors;
 
 	for (int i = 0; i < 3; i++) {
 		vert.push_back(vertices[idv[i]]);
 		texco.push_back(uv[idt[i]]);
+		nors.push_back(normals[idn[i]]);
 	}
 
-	return std::vector<std::vector<glm::vec3>>{vert, texco};
+	return Face{ vert, texco, nors };
+}
+
+Point Model::point_from_face(const Face &face, int index)
+{
+	Point p(LAYERS_COUNT, glm::ivec3());
+
+	if (index < 0 || index >= LAYERS_COUNT)
+		return p;
+
+	for (int i = 0; i < LAYERS_COUNT; i++)
+		p[i] = face[i][index];
+
+	return p;
 }

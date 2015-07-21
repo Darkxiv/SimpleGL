@@ -6,7 +6,8 @@
 #include <algorithm>
 #include <stdio.h>
 
-Image::Image(int w, int h, int d) : width(w), height(h), depth(d), img(w, h, TGAImage::RGB)
+Canvas::Canvas(int w, int h, int d) : width(w), height(h), depth(d), img(w, h, TGAImage::RGB),
+mode(MODE_WIRE), col(255, 255, 255, 255), texture_flags(EMPTY), render_flags(EMPTY), light_dir(0.0, -1.0, 1.0)
 {
 	if (w > 0 && h > 0)
 		depth_buffer = new int[w * h]();
@@ -14,13 +15,13 @@ Image::Image(int w, int h, int d) : width(w), height(h), depth(d), img(w, h, TGA
 		depth_buffer = NULL;
 }
 
-Image::~Image()
+Canvas::~Canvas()
 {
 	if (depth_buffer) 
 		delete[] depth_buffer;
 }
 
-void Image::draw_line(int x0, int y0, int x1, int y1, TGAColor color)
+void Canvas::draw_line(int x0, int y0, int x1, int y1, TGAColor color)
 {
 	bool revers = false;
 	if (std::abs(x0 - x1) < std::abs(y0 - y1)) {
@@ -59,57 +60,35 @@ void Image::draw_line(int x0, int y0, int x1, int y1, TGAColor color)
 	}
 }
 
-void Image::draw_line(glm::ivec3 p0, glm::ivec3 p1, TGAColor color)
+void Canvas::draw_line(glm::ivec3 p0, glm::ivec3 p1, TGAColor color)
 {
 	draw_line(p0.x, p0.y, p1.x, p1.y, color);
 }
 
-void Image::draw_triangle_wire(glm::ivec3 p0, glm::ivec3 p1, glm::ivec3 p2, TGAColor color)
+void Canvas::draw_triangle_wire(glm::ivec3 p0, glm::ivec3 p1, glm::ivec3 p2, TGAColor color)
 {
 	draw_line(p0, p1, color);
 	draw_line(p1, p2, color);
 	draw_line(p2, p0, color);
 }
 
-glm::ivec3 Image::get_vert_cross_line_y(const glm::vec3 &p0, const glm::vec3 &p1, int y) {
+glm::ivec3 Canvas::get_vert_cross_line_y(const glm::vec3 &p0, const glm::vec3 &p1, int y) {
 	glm::ivec3 p;
 
-	p.y = y;
 	if (std::round(p0.y - p1.y) != 0) {
 		p.x = std::round((p1.x - p0.x) * (float(y - p0.y) / (p1.y - p0.y)) + p0.x);
 		p.z = std::round((p1.z - p0.z) * (float(y - p0.y) / (p1.y - p0.y)) + p0.z);
 	}
 	else {
-		if (p0.x < p1.x) {
-			p.x = p0.x;
-			p.z = p0.z;
-		}
-		else {
-			p.x = p1.x;
-			p.z = p1.z;
-		}
+		p = glm::ivec3(p0.x < p1.x ? p0 : p1);
 	}
+	p.y = y;
 
 	return p;
 }
 
-glm::ivec3 Image::get_uv_cross_line_y(const glm::vec3 &uv0, const glm::vec3 &uv1, const glm::vec3 &p0, const glm::vec3 &p1, int y)
-{
-	glm::vec3 p;
-
-	if (std::round(p0.y - p1.y) != 0) {
-		p.x = std::round((uv1.x - uv0.x) * (float(y - p0.y) / (p1.y - p0.y)) + uv0.x);
-		p.y = std::round((uv1.y - uv0.y) * (float(y - p0.y) / (p1.y - p0.y)) + uv0.y);
-	}
-	else {
-		p.x = p0.x < p1.x ? uv0.x : uv1.x;
-		p.y = p0.x < p1.x ? uv0.y : uv1.y;
-	}
-
-	return p;
-}
-
-void Image::draw_triangle_flat(glm::ivec3 p0, glm::ivec3 p1, glm::ivec3 p2, TGAColor color)
+// deprecated
+void Canvas::draw_triangle_flat(glm::ivec3 p0, glm::ivec3 p1, glm::ivec3 p2, TGAColor color)
 {
 	if (p0.y > p1.y) std::swap(p0, p1);
 	if (p0.y > p2.y) std::swap(p0, p2);
@@ -142,96 +121,211 @@ void Image::draw_triangle_flat(glm::ivec3 p0, glm::ivec3 p1, glm::ivec3 p2, TGAC
 	}
 }
 
-void Image::draw_triangle_texture(const std::vector<std::vector<glm::vec3>> &geom, float intensity, TGAImage &tex)
+// TODO make interpolation general for all layers
+void Canvas::draw_triangle_texture(Face &geom)
 {
-	glm::ivec3 p0 = geom[Model::VERTEX_LAYER][0], p1 = geom[Model::VERTEX_LAYER][1], p2 = geom[Model::VERTEX_LAYER][2];
-	glm::ivec3 uv0 = geom[Model::TEXCO_LAYER][0], uv1 = geom[Model::TEXCO_LAYER][1], uv2 = geom[Model::TEXCO_LAYER][2];
+	bool texture_mapping = render_flags & TEXTURE_MAPPING;
+	bool normal_mapping = render_flags & NORMAL_MAPPING;
+	bool z_buffer = (render_flags & USE_Z_BUFFER) && depth_buffer;
+	bool shadeless = render_flags & SHADELESS;
 
-	if (p0.y > p1.y) { std::swap(p0, p1); std::swap(uv0, uv1); }
-	if (p0.y > p2.y) { std::swap(p0, p2); std::swap(uv0, uv2); }
-	if (p1.y > p2.y) { std::swap(p1, p2); std::swap(uv1, uv2); }
+	glm::vec3 p0[] = { geom[CO_LAYER][0], geom[UV_LAYER][0] },
+		p1[] = { geom[CO_LAYER][1], geom[UV_LAYER][1] },
+		p2[] = { geom[CO_LAYER][2], geom[UV_LAYER][2] };
+	glm::vec3 &n0 = geom[NOR_LAYER][0], &n1 = geom[NOR_LAYER][1], &n2 = geom[NOR_LAYER][2];
+	float face_intensity = 1.0;
 
-	if (std::round(p2.y - p0.y) == 0) // don't care about degenerate triangle
+	if (!normal_mapping && !shadeless) {
+		glm::vec3 facen = glm::normalize(glm::cross(geom[CO_LAYER][2] - geom[CO_LAYER][0], geom[CO_LAYER][1] - geom[CO_LAYER][0]));
+		face_intensity = -glm::dot(light_dir, facen);
+	}
+
+	if (p0[0].y > p1[0].y) { std::swap(p0, p1); std::swap(n0, n1); }
+	if (p0[0].y > p2[0].y) { std::swap(p0, p2); std::swap(n0, n2); }
+	if (p1[0].y > p2[0].y) { std::swap(p1, p2); std::swap(n1, n2); }
+
+	if (std::round(p2[0].y - p0[0].y) == 0) // don't care about degenerate triangle
 		return;
 
-	for (int y = p0.y; y <= p2.y; y++) {
-		glm::ivec3 fp = get_vert_cross_line_y(p0, p2, y);
-		glm::ivec3 lp = y < p1.y ? get_vert_cross_line_y(p0, p1, y) : get_vert_cross_line_y(p1, p2, y);
-		glm::ivec3 fuv = get_uv_cross_line_y(uv0, uv2, p0, p2, y);
-		glm::ivec3 luv = y < p1.y ? get_uv_cross_line_y(uv0, uv1, p0, p1, y) : get_uv_cross_line_y(uv1, uv2, p1, p2, y);
+	for (int y = std::round(p0[0].y); y <= std::round(p2[0].y); y++) {
+		float alpha = float(y - p0[0].y) / (p2[0].y - p0[0].y);
+		float betta = y < p1[0].y ? float(y - p0[0].y) / (p1[0].y - p0[0].y) :
+				float(y - p1[0].y) / (p2[0].y - p1[0].y);
 
-		if (fp.x > lp.x) {
-			std::swap(fp, lp); 
-			std::swap(fuv, luv); 
+		if (y < p1[0].y ? std::round(p1[0].y - p0[0].y) == 0 : std::round(p2[0].y - p1[0].y) == 0)
+			betta = 1.0;
+
+		glm::vec3 fp[] = { (p2[0] - p0[0]) * alpha + p0[0], (p2[1] - p0[1]) * alpha + p0[1] };
+		glm::vec3 lp[] = { y < p1[0].y ? (p1[0] - p0[0]) * betta + p0[0] : (p2[0] - p1[0]) * betta + p1[0],
+			y < p1[0].y ? (p1[1] - p0[1]) * betta + p0[1] : (p2[1] - p1[1]) * betta + p1[1] };
+
+		glm::vec3 fn, ln;
+		if (normal_mapping) {
+			fn = (n2 - n0) * alpha + n0;
+			ln = y < p1[0].y ? (n1 - n0) * betta + n0 : (n2 - n1) * betta + n1;
 		}
 
-		for (int x = fp.x; x <= lp.x; x++) {
-			int z = 1;
-			glm::ivec3 uv_inter = fuv;
+		if (fp[0].x > lp[0].x) {
+			std::swap(fp, lp);
+			if (normal_mapping)
+				std::swap(fn, ln);
+		}
+
+		for (int x = std::round(fp[0].x); x <= std::round(lp[0].x); x++) {
+			float gamma = lp[0].x == fp[0].x ? 0.0f : float(x - fp[0].x) / (lp[0].x - fp[0].x);
+			float intensity = face_intensity;
 			
-			if (lp.x != fp.x) {
-				z = (lp.z - fp.z) * (float(x - fp.x) / (lp.x - fp.x)) + fp.z;
-				uv_inter = glm::vec3(luv - fuv) * (float(x - fp.x) / (lp.x - fp.x)) + glm::vec3(fuv);
+			if (normal_mapping)
+				intensity = glm::dot(glm::normalize((ln - fn) * gamma + fn), light_dir);
+
+			if (intensity < 0.0)
+				intensity = 0.0;
+
+			if (!(x >= 0 && y >= 0 && x < width && y < height))
+				continue;
+
+			if (z_buffer) {
+				int z = (lp[0].z - fp[0].z) * gamma + fp[0].z;
+				if (z > depth_buffer[y * width + x])
+					depth_buffer[y * width + x] = z;
+				else
+					continue;
 			}
 
-			if (x >= 0 && y >= 0 && x < width && y < height && depth_buffer && z > depth_buffer[y * width + x] &&
-				uv_inter.x < tex.get_width() && uv_inter.y < tex.get_height() && uv_inter.x >= 0 && uv_inter.y >= 0) {
-				depth_buffer[y * width + x] = z;
-				TGAColor color = tex.get(uv_inter.x, uv_inter.y);
-				img.set(x, y, TGAColor(color.r * intensity, color.g * intensity, color.b * intensity, 255));
+			if (texture_mapping && !shadeless) {
+				glm::ivec3 uv_inter((lp[1] - fp[1]) * gamma + fp[1]);
+				if (uv_inter.x < diffuse.get_width() && uv_inter.y < diffuse.get_height() && uv_inter.x >= 0 && uv_inter.y >= 0) {
+					TGAColor color = diffuse.get(uv_inter.x, uv_inter.y);
+					img.set(x, y, TGAColor(color.r * intensity, color.g * intensity, color.b * intensity, 255));
+				}
+				else {
+					// depends on clamping mode
+				}
+			}
+			else {
+				img.set(x, y, TGAColor(col.r * intensity, col.g * intensity, col.b * intensity, 255));
 			}
 		}
 	}
 }
 
-void Image::draw_model_wire(const Model &model, const TGAColor &color)
+void Canvas::draw_model(const Model &model)
+{
+	switch (mode)
+	{
+	case Canvas::MODE_WIRE:
+		draw_model_wire(model);
+		break;
+	case Canvas::MODE_FLAT:
+		draw_model_texture(model);
+		break;
+	default:
+		printf("Error: incorrect render mode.");
+		break;
+	}
+}
+
+void Canvas::draw_model_wire(const Model &model)
 {
 	int max = model.nfaces();
 	for (int i = 0; i < model.nfaces(); i++) {
 		Face face = model.get_face(i);
 		for (int j = 0; j < 3; j++) {
-			glm::vec3 v0 = face[Model::VERTEX_LAYER][j];
-			glm::vec3 v1 = face[Model::VERTEX_LAYER][(j + 1) % 3];
-			int x0 = (v0.x + 1.0f)*width / 2.0f;
-			int y0 = (v0.y + 1.0f)*height / 2.0f;
-			int x1 = (v1.x + 1.0f)*width / 2.0f;
-			int y1 = (v1.y + 1.0f)*height / 2.0f;
-			draw_line(x0, y0, x1, y1, color);
+			glm::vec3 v0 = face[CO_LAYER][j];
+			glm::vec3 v1 = face[CO_LAYER][(j + 1) % 3];
+			int x0 = (v0.x + 1.0f) * width / 2.0f;
+			int y0 = (v0.y + 1.0f) * height / 2.0f;
+			int x1 = (v1.x + 1.0f) * width / 2.0f;
+			int y1 = (v1.y + 1.0f) * height / 2.0f;
+			draw_line(x0, y0, x1, y1, col);
 		}
 	}
 }
 
-void Image::draw_model_texture(const Model &model, TGAImage &tex)
+void Canvas::draw_model_texture(const Model &model)
 {
-	glm::vec3 light_dir(0, 0, -1.0);
-	light_dir = glm::normalize(light_dir);
-
 	for (int i = 0; i < model.nfaces(); i++) {
 		Face face = model.get_face(i);
-		auto world_v = face[Model::VERTEX_LAYER];
+		auto world_v = face[CO_LAYER];
 		
 		for (int j = 0; j < 3; j++) {
-			auto v = face[Model::VERTEX_LAYER][j];
-			auto uvp = face[Model::TEXCO_LAYER][j];
-			face[Model::VERTEX_LAYER][j] = glm::vec3((v.x + 1.0f) * width / 2.0f, (v.y + 1.0f) * height / 2.0f, (v.z + 1.0f) * depth / 2.0f);
-			face[Model::TEXCO_LAYER][j] = glm::vec3(uvp.x * tex.get_width(), uvp.y * tex.get_height(), 0.0f);
+			auto v = face[CO_LAYER][j];
+			face[CO_LAYER][j] = glm::vec3((v.x + 1.0f) * width / 2.0f, (v.y + 1.0f) * height / 2.0f, (v.z + 1.0f) * depth / 2.0f);
+
+			if (render_flags & TEXTURE_MAPPING) {
+				if (texture_flags & DIFFUSE_TEXTURE) {
+					auto uvp = face[UV_LAYER][j];
+					face[UV_LAYER][j] = glm::vec3(uvp.x * diffuse.get_width(), uvp.y * diffuse.get_height(), 0.0f);
+				}
+			}
 		}
 
-		glm::vec3 n = glm::cross(world_v[2] - world_v[0], world_v[1] - world_v[0]);
-		n = glm::normalize(n);
-
-		float intensity = glm::dot(light_dir, n);
-		if (intensity < 0)
-			intensity = 0;
-
-		//draw_triangle_flat(face[Model::VERTEX_LAYER][0], face[Model::VERTEX_LAYER][1], face[Model::VERTEX_LAYER][2], TGAColor(intensity * 255, intensity * 255, intensity * 255, 255));
-		draw_triangle_texture(face, intensity, tex);
+		draw_triangle_texture(face);
 	}
 }
 
-void Image::write_to_file(const std::string &fn)
+void Canvas::write_to_file(const std::string &fn)
 {
 	img.flip_vertically(); // i want to have the origin at the left bottom corner of the image
 	img.write_tga_file(fn.c_str());
 	img.flip_vertically();
+}
+
+
+void Canvas::bind_diffuse_texture(const TGAImage &texture)
+{
+	diffuse = texture;
+	texture_flags |= DIFFUSE_TEXTURE;
+}
+
+void Canvas::set_mode(const Render_mode &draw_mode)
+{
+	mode = draw_mode;
+}
+
+void Canvas::set_color(const TGAColor &color)
+{
+	col = color;
+}
+
+void Canvas::set_light(const glm::vec3 &light_direction)
+{
+	light_dir = glm::normalize(light_direction);
+}
+
+void Canvas::set_render_settings(unsigned int flags)
+{
+	render_flags = flags;
+}
+
+void Canvas::set_shadeless(const bool flag)
+{
+	if (flag)
+		render_flags |= SHADELESS;
+	else
+		render_flags &= ~SHADELESS;
+}
+
+void Canvas::set_normal_mapping(const bool flag)
+{
+	if (flag)
+		render_flags |= NORMAL_MAPPING;
+	else
+		render_flags &= ~NORMAL_MAPPING;
+}
+
+void Canvas::set_texture_mapping(const bool flag)
+{
+	if (flag)
+		render_flags |= TEXTURE_MAPPING;
+	else
+		render_flags &= ~TEXTURE_MAPPING;
+}
+
+void Canvas::set_depth_buffer(const bool flag)
+{
+	if (flag)
+		render_flags |= USE_Z_BUFFER;
+	else
+		render_flags &= ~USE_Z_BUFFER;
 }
